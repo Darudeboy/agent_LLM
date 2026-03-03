@@ -27,6 +27,7 @@ from release_pr_status import (
     format_release_tasks_pr_report,
 )
 from release_flow import evaluate_release_gates, format_release_gate_report
+from arch import ArchitectureFieldFixer, JIRA_URL as ARCH_JIRA_URL, JIRA_TOKEN as ARCH_JIRA_TOKEN
 from master_analyzer import MasterServicesAnalyzer, ConfluenceDeployPlanGenerator
 
 # === ИМПОРТЫ ДЛЯ ИИ-АГЕНТА ===
@@ -443,19 +444,20 @@ class BlastAIAssistant:
         @tool("update_architecture_status")
         def update_architecture_status(release_key: str) -> str:
             """
-            Запускает скрипт изменения статуса архитектуры (arch.py).
-            Используй, если просят: "проставь архитектуру", "закрой архитектурные задачи", "арх не меняется".
+            Проставляет поле архитектуры для Story в составе релиза.
+            Используй, если просят: "проставь архитектуру для сторей в релизе",
+            "проставь архитектуру", "закрой архитектурные задачи", "арх не меняется".
             """
             release_key = (release_key or "").strip().upper()
             if not release_key:
                 return "Ошибка: не передан release_key (пример: HRPRELEASE-111135)."
-            self.app_gui.append_ai_chat(f"🛠️ [Агент] Меняю статус архитектуры для релиза {release_key}...\\n")
-            try:
-                script_path = os.path.join(os.path.dirname(__file__), "arch.py")
-                if not os.path.exists(script_path): return "Ошибка: скрипт arch.py не найден."
-                process = subprocess.run([sys.executable, script_path, release_key], capture_output=True, text=True, check=False)
-                return f"Статус архитектуры обновлен!\\nРезультат: {process.stdout}"
-            except Exception as e: return f"Ошибка обновления архитектуры: {e}"
+            self.app_gui.append_ai_chat(
+                f"🛠️ [Агент] Проставляю архитектуру для Story в релизе {release_key}...\\n"
+            )
+            return self.app_gui.start_architecture_update_from_ai(
+                release_key=release_key,
+                announce_in_chat=True,
+            )
 
         @tool("move_release_status")
         def move_release_status(issue_key: str, target_status: str) -> str:
@@ -783,6 +785,8 @@ class BlastAIAssistant:
                 "check_id/result (для confirm_manual_check).\\n"
                 "- Если пользователь пишет 'собери задачи с версией X в релиз Y', вызови link_tasks_to_release(release_key=Y, fix_version=X).\\n"
                 "- Допустим также алиас link_issues_by_fix_version с теми же аргументами.\\n"
+                "- Если пользователь просит 'проставь архитектуру для сторей в релизе' (и аналоги), "
+                "вызови update_architecture_status(release_key).\\n"
                 "- Если пользователь просит полный релизный цикл, сначала вызови start_release_guided_cycle.\\n"
                 "- Для ручных проверок НЕ придумывай подтверждения: попроси confirm_manual_check с check_id и result.\\n"
                 "- Если пользователь просит несколько действий, верни несколько отдельных JSON-словарей вызова инструментов подряд.\\n"
@@ -942,6 +946,28 @@ class BlastAIAssistant:
         if next_step_intent and release_match:
             release_key = release_match.group(1).upper()
             result = self.app_gui.run_next_release_step(
+                release_key=release_key,
+                announce_in_chat=True,
+            )
+            self.app_gui.append_ai_chat(f"🤖 Blast AI: {result}\n\n")
+            return True
+
+        architecture_intent = any(
+            phrase in lowered
+            for phrase in (
+                "проставь архитектуру",
+                "архитектуру для сторей",
+                "архитектура для сторей",
+                "закрой архитектурные задачи",
+                "architecture for stories",
+            )
+        )
+        if architecture_intent and release_match:
+            release_key = release_match.group(1).upper()
+            self.app_gui.append_ai_chat(
+                f"🛠️ [Агент] Прямая команда: проставляю архитектуру для Story в релизе {release_key}\n"
+            )
+            result = self.app_gui.start_architecture_update_from_ai(
                 release_key=release_key,
                 announce_in_chat=True,
             )
@@ -1766,6 +1792,124 @@ class ModernJiraApp(ctk.CTk):
             self.after(0, lambda: self.add_result(f"❌ Ошибка запуска bt3.py: {e}"))
             if announce_in_chat:
                 self.append_ai_chat(f"⚠️ Ошибка запуска bt3.py: {e}\n\n")
+
+    def start_architecture_update_from_ai(self, release_key: str, announce_in_chat: bool = False) -> str:
+        safe_release = (release_key or "").strip().upper()
+        if not safe_release:
+            return "Ошибка: release_key не указан."
+
+        self.after(0, self._open_monitor_tab)
+        self.after(0, lambda: self.update_status("Проставление архитектуры..."))
+        self.after(0, lambda: self.details_label.configure(text=f"Релиз: {safe_release}"))
+        self.after(0, lambda: self.progress_bar.set(0.05))
+
+        worker = threading.Thread(
+            target=self._architecture_update_thread,
+            args=(safe_release, announce_in_chat),
+            daemon=True,
+        )
+        worker.start()
+        return (
+            f"Запускаю проставление архитектуры для Story в релизе {safe_release}. "
+            "Прогресс в Мониторинге."
+        )
+
+    def _architecture_update_thread(self, release_key: str, announce_in_chat: bool):
+        try:
+            if not ARCH_JIRA_TOKEN:
+                raise ValueError("Не найден JIRA_TOKEN для arch.py логики.")
+
+            release = self.jira_service.get_issue_details(release_key)
+            if not release:
+                raise ValueError(f"Релиз {release_key} не найден.")
+
+            linked_keys = self.jira_service.get_linked_issues(release_key)
+            story_pairs: set[tuple[str, str]] = set()
+
+            for idx, key in enumerate(linked_keys, start=1):
+                issue = self.jira_service.get_issue_details(key)
+                if not issue:
+                    continue
+                issue_type = (issue.get("fields", {}).get("issuetype", {}).get("name") or "").lower()
+                if issue_type != "story":
+                    continue
+                project_key = issue.get("fields", {}).get("project", {}).get("key", "")
+                fix_versions = issue.get("fields", {}).get("fixVersions", []) or []
+                for fv in fix_versions:
+                    fv_name = fv.get("name")
+                    if project_key and fv_name:
+                        story_pairs.add((project_key, fv_name))
+                self.after(
+                    0,
+                    lambda p=min(0.6, idx / max(len(linked_keys), 1) * 0.6): self.progress_bar.set(p),
+                )
+
+            if not story_pairs:
+                release_versions = release.get("fields", {}).get("fixVersions", []) or []
+                release_project = release.get("fields", {}).get("project", {}).get("key", "")
+                for fv in release_versions:
+                    fv_name = fv.get("name")
+                    if release_project and fv_name:
+                        story_pairs.add((release_project, fv_name))
+
+            if not story_pairs:
+                raise ValueError(
+                    "Не удалось определить project/fixVersion для Story в релизе. "
+                    "Проверь привязки задач и fixVersion."
+                )
+
+            fixer = ArchitectureFieldFixer(ARCH_JIRA_URL, ARCH_JIRA_TOKEN)
+            total_runs = len(story_pairs)
+            total_fixed = 0
+            total_need = 0
+            total_errors = 0
+            details = []
+
+            for i, (project_key, fix_version) in enumerate(sorted(story_pairs), start=1):
+                self.after(
+                    0,
+                    lambda pk=project_key, fv=fix_version: self.details_label.configure(
+                        text=f"Обработка: {pk} / {fv}"
+                    ),
+                )
+                stats = fixer.find_and_fix_stories(
+                    project_key=project_key,
+                    fix_version=fix_version,
+                    auto_confirm=True,
+                )
+                total_need += int(stats.get("need_fix", 0))
+                total_fixed += int(stats.get("fixed", 0))
+                total_errors += int(stats.get("errors", 0))
+                details.append(f"{project_key}/{fix_version}: {stats.get('fixed', 0)}/{stats.get('need_fix', 0)}")
+                progress = 0.6 + (i / max(total_runs, 1) * 0.4)
+                self.after(0, lambda p=progress: self.progress_bar.set(min(p, 1.0)))
+
+            summary = (
+                f"Архитектура: успешно {total_fixed}/{total_need}, ошибок {total_errors}. "
+                f"Пакетов: {total_runs}."
+            )
+            detail_text = "\n".join(details)
+
+            self.after(0, lambda: self.update_status("Готово"))
+            self.after(0, lambda: self.add_result(f"✅ {summary}"))
+            self.after(0, lambda: self.add_result(f"ℹ️ Детали:\n{detail_text}"))
+            self.history.add(
+                "Архитектура Story",
+                {"release": release_key, "runs": total_runs, "fixed": total_fixed, "need_fix": total_need, "errors": total_errors},
+            )
+            self.history.save_to_file(self.history_path)
+
+            if announce_in_chat:
+                self.append_ai_chat(
+                    f"🤖 Blast AI: Проставление архитектуры для {release_key} завершено.\n"
+                    f"{summary}\n{detail_text}\n\n"
+                )
+        except Exception as e:
+            error_text = f"Ошибка проставления архитектуры: {e}"
+            self.after(0, lambda: self.update_status("Ошибка"))
+            self.after(0, lambda: self.add_result(f"❌ {error_text}"))
+            if announce_in_chat:
+                self.append_ai_chat(f"⚠️ {error_text}\n\n")
 
     def link_issues(self):
         release_key = self.release_entry.get().strip()

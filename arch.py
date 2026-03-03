@@ -1,3 +1,4 @@
+import argparse
 import requests
 import urllib3
 import logging
@@ -70,7 +71,12 @@ class ArchitectureFieldFixer:
             logging.error(f"❌ Ошибка при получении полей Jira: {e}")
             raise
 
-    def find_and_fix_stories(self, project_key: str, fix_version: str) -> Dict[str, int]:
+    def find_and_fix_stories(
+        self,
+        project_key: str,
+        fix_version: str,
+        auto_confirm: bool = False,
+    ) -> Dict[str, int]:
         """
         Находит Story по project + fixVersion и устанавливает
         поле Архитектура = "Не влияет на архитектуру"
@@ -129,16 +135,19 @@ class ArchitectureFieldFixer:
             print(f"\n{'='*70}")
             print(f"⚠️  Будет установлено значение 'Не влияет на архитектуру' для {stats['need_fix']} задач(и)!")
 
-            while True:
-                confirm = input("Продолжить? (y/n): ").strip().lower()
-                if confirm in ['y', 'yes', 'д', 'да']:
-                    print("✅ Подтверждено, начинаем обработку...\n")
-                    break
-                if confirm in ['n', 'no', 'н', 'нет']:
-                    print("❌ Операция отменена пользователем")
-                    stats['need_fix'] = 0
-                    return stats
-                print("⚠️ Некорректный ввод. Введите 'y' для продолжения или 'n' для отмены.")
+            if auto_confirm:
+                print("✅ Автоподтверждение включено, начинаем обработку...\n")
+            else:
+                while True:
+                    confirm = input("Продолжить? (y/n): ").strip().lower()
+                    if confirm in ['y', 'yes', 'д', 'да']:
+                        print("✅ Подтверждено, начинаем обработку...\n")
+                        break
+                    if confirm in ['n', 'no', 'н', 'нет']:
+                        print("❌ Операция отменена пользователем")
+                        stats['need_fix'] = 0
+                        return stats
+                    print("⚠️ Некорректный ввод. Введите 'y' для продолжения или 'n' для отмены.")
 
             print(f"{'='*70}")
             print("🔧 УСТАНОВКА ЗНАЧЕНИЯ")
@@ -256,24 +265,40 @@ def main():
         if not JIRA_TOKEN:
             raise ValueError("❌ Не найден JIRA_TOKEN в переменных окружения")
 
+        parser = argparse.ArgumentParser(description="Проставление поля архитектуры по Story.")
+        parser.add_argument("--project-key", dest="project_key", default="")
+        parser.add_argument("--fix-version", dest="fix_version", default="")
+        parser.add_argument("--yes", dest="auto_confirm", action="store_true")
+        args = parser.parse_args()
+
         print("\n" + "="*70)
         print("🔧 СКРИПТ УСТАНОВКИ ПОЛЯ 'АРХИТЕКТУРА' В JIRA")
         print("   (Устанавливает значение 'Не влияет на архитектуру')")
         print("="*70)
 
-        # Выбор проекта
-        project_key = select_project()
+        if args.project_key and args.fix_version:
+            project_key = args.project_key.strip().upper()
+            fix_version = args.fix_version.strip()
+            auto_confirm = bool(args.auto_confirm)
+        else:
+            # Выбор проекта
+            project_key = select_project()
 
-        # Обязательный ввод fixVersion
-        fix_version = input("\nВведите fixVersion (например, Minor-2025-10-30): ").strip()
-        if not fix_version:
-            raise ValueError("❌ fixVersion обязателен для запуска скрипта")
+            # Обязательный ввод fixVersion
+            fix_version = input("\nВведите fixVersion (например, Minor-2025-10-30): ").strip()
+            if not fix_version:
+                raise ValueError("❌ fixVersion обязателен для запуска скрипта")
+            auto_confirm = False
 
         # Запуск проверки
         fixer = ArchitectureFieldFixer(JIRA_URL, JIRA_TOKEN)
 
         print(f"\n⏳ Запуск обработки для {project_key} / {fix_version}...")
-        stats = fixer.find_and_fix_stories(project_key, fix_version)
+        stats = fixer.find_and_fix_stories(
+            project_key=project_key,
+            fix_version=fix_version,
+            auto_confirm=auto_confirm,
+        )
 
         # Итоговая статистика
         print(f"\n{'='*70}")
