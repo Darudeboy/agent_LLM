@@ -99,6 +99,33 @@ def _extract_prs_from_remote_links(remote_links: List[dict]) -> List[Dict[str, s
     return prs
 
 
+def _extract_prs_from_dev_status(dev_prs: List[dict]) -> List[Dict[str, str]]:
+    """Извлекает PR из ответа Jira dev-status API (панель Development)."""
+    result: List[Dict[str, str]] = []
+    for pr in dev_prs:
+        url = pr.get("url", "")
+        name = pr.get("name", "") or url
+        raw_status = (pr.get("status") or "").upper()
+        if raw_status == "MERGED":
+            status = "Merged"
+        elif raw_status in ("OPEN", "ACTIVE"):
+            status = "Open"
+        elif raw_status == "DECLINED":
+            status = "Declined"
+        else:
+            status = _detect_pr_status(raw_status, name)
+        result.append(
+            {
+                "id": url or name,
+                "title": name,
+                "status": status,
+                "url": url,
+                "source": "dev-status",
+            }
+        )
+    return result
+
+
 def _deduplicate_prs(prs: List[Dict[str, str]]) -> List[Dict[str, str]]:
     deduped: List[Dict[str, str]] = []
     seen: set[Tuple[str, str]] = set()
@@ -111,17 +138,32 @@ def _deduplicate_prs(prs: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return deduped
 
 
+def _collect_prs_from_issue(jira_service, issue: dict, issue_key: str) -> List[Dict[str, str]]:
+    """Собирает PR из одной задачи через все три источника."""
+    prs: List[Dict[str, str]] = []
+    prs.extend(_extract_prs_from_issue_links(issue))
+    remote_links = jira_service.get_issue_remote_links(issue_key)
+    prs.extend(_extract_prs_from_remote_links(remote_links))
+    issue_id = issue.get("id")
+    if issue_id:
+        dev_prs = jira_service.get_dev_status_prs(issue_id)
+        prs.extend(_extract_prs_from_dev_status(dev_prs))
+    return prs
+
+
 def _collect_prs_deep(jira_service, issue_key: str) -> List[Dict[str, str]]:
-    """Собирает PR из задачи и её сабтасков (глубина 1)."""
+    """Собирает PR из задачи и её сабтасков (глубина 1).
+
+    Проверяет три источника: issuelinks, remotelinks и dev-status API
+    (панель Development в Jira).
+    """
     prs: List[Dict[str, str]] = []
 
     issue = jira_service.get_issue_details(issue_key)
     if not issue:
         return prs
 
-    prs.extend(_extract_prs_from_issue_links(issue))
-    remote_links = jira_service.get_issue_remote_links(issue_key)
-    prs.extend(_extract_prs_from_remote_links(remote_links))
+    prs.extend(_collect_prs_from_issue(jira_service, issue, issue_key))
 
     for subtask in issue.get("fields", {}).get("subtasks", []) or []:
         sub_key = subtask.get("key")
@@ -130,9 +172,7 @@ def _collect_prs_deep(jira_service, issue_key: str) -> List[Dict[str, str]]:
         sub_issue = jira_service.get_issue_details(sub_key)
         if not sub_issue:
             continue
-        prs.extend(_extract_prs_from_issue_links(sub_issue))
-        sub_remote = jira_service.get_issue_remote_links(sub_key)
-        prs.extend(_extract_prs_from_remote_links(sub_remote))
+        prs.extend(_collect_prs_from_issue(jira_service, sub_issue, sub_key))
 
     return _deduplicate_prs(prs)
 

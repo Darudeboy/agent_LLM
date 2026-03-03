@@ -127,6 +127,26 @@ class JiraService:
             self.logger.error(f"Ошибка получения remote links для {issue_key}: {e}")
             return []
 
+    def get_dev_status_prs(self, issue_id: str) -> List[dict]:
+        """Получение PR из панели Development (Stash/Bitbucket интеграция)."""
+        try:
+            url = (
+                f"/rest/dev-status/latest/issue/detail"
+                f"?issueId={issue_id}"
+                f"&applicationType=stash&dataType=pullrequest"
+            )
+            response = self.jira.get(url)
+            prs: List[dict] = []
+            for detail in (response or {}).get("detail", []):
+                for pr in detail.get("pullRequests", []):
+                    prs.append(pr)
+            return prs
+        except Exception as e:
+            self.logger.error(
+                f"Ошибка получения dev-status PR для issue {issue_id}: {e}"
+            )
+            return []
+
     def get_available_transitions(self, issue_key: str) -> List[dict]:
         """Получение доступных переходов статуса для задачи"""
         try:

@@ -1017,10 +1017,10 @@ class ModernJiraApp(ctk.CTk):
         self.ai_chat_display = ctk.CTkTextbox(self.ai_tab, font=ctk.CTkFont(size=14), wrap="word", state="disabled")
         self.ai_chat_display.pack(fill="both", expand=True, padx=20, pady=10)
 
-        self.ai_chat_display.tag_config("ai_user", foreground="#0D47A1", justify="left", lmargin1=10, lmargin2=10, rmargin=120)
-        self.ai_chat_display.tag_config("ai_bot", foreground="#1B5E20", justify="right", lmargin1=120, lmargin2=120, rmargin=10)
-        self.ai_chat_display.tag_config("ai_tool", foreground="#6A1B9A", justify="right", lmargin1=120, lmargin2=120, rmargin=10)
-        self.ai_chat_display.tag_config("ai_error", foreground="#B71C1C", justify="right", lmargin1=120, lmargin2=120, rmargin=10)
+        self.ai_chat_display.tag_config("ai_user", foreground="#0D47A1", lmargin1=10, lmargin2=10)
+        self.ai_chat_display.tag_config("ai_bot", foreground="#1B5E20", lmargin1=10, lmargin2=10)
+        self.ai_chat_display.tag_config("ai_tool", foreground="#6A1B9A", lmargin1=10, lmargin2=10)
+        self.ai_chat_display.tag_config("ai_error", foreground="#B71C1C", lmargin1=10, lmargin2=10)
         self.ai_chat_display.tag_config("ai_default", foreground="#263238")
 
         # Приветственное сообщение
@@ -1110,12 +1110,7 @@ class ModernJiraApp(ctk.CTk):
             elif plain.startswith("⚠️") or plain.startswith("❌"):
                 tag = "ai_error"
 
-            if tag == "ai_user":
-                self.ai_chat_display.insert("end", "\n", "ai_default")
-            self.ai_chat_display.insert("end", text, tag)
-            if tag != "ai_user":
-                self.ai_chat_display.insert("end", "", "ai_default")
-
+            self.ai_chat_display.insert("end", "\n" + text, tag)
             self.ai_chat_display.see("end")
             self.ai_chat_display.configure(state="disabled")
         self.after(0, update)
