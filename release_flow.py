@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from release_flow_config import get_release_flow_profile
@@ -108,7 +109,19 @@ def _is_distribution_registered(release_issue: dict, profile: dict) -> bool:
         ke_markers = [_norm(x) for x in tab.get("ke_keywords", [])]
         has_ke = any(marker in blob for marker in ke_markers) if ke_markers else False
         has_registered = any(marker in blob for marker in ("зарегистр", "registered", "регистрац"))
-        return has_ke and has_registered
+        if has_ke and has_registered:
+            return True
+
+        # Jira UI-кейс: "КЭ дистрибутива" заполняется только после регистрации.
+        # Если поле КЭ найдено и рядом нет явного "нет/н/д", считаем зарегистрированным.
+        if has_ke:
+            negative_patterns = (
+                r"кэ дистрибутива[^a-zа-я0-9]{0,20}(нет|н/д|n/a|none)",
+                r"ke distribution[^a-z0-9]{0,20}(no|n/a|none|not set)",
+            )
+            if not any(re.search(pattern, blob, flags=re.IGNORECASE) for pattern in negative_patterns):
+                return True
+        return False
     return _contains_any(str(value), tab.get("registered_keywords", []))
 
 
@@ -126,7 +139,25 @@ def _is_ift_recommended(release_issue: dict, profile: dict) -> bool:
         has_label = "ифт" in blob or "ift" in blob
         has_recommended = "рекоменд" in blob or "recommended" in blob
         has_green = any(_norm(x) in blob for x in tab.get("green_keywords", []))
-        return has_label and has_recommended and (has_green or has_recommended)
+        if has_label and has_recommended and (has_green or has_recommended):
+            return True
+
+        # Дополнительный парсинг для rendered HTML:
+        # "Рекомендация по отчету ИФТ ... Рекомендован".
+        html_blob = str(release_issue.get("renderedFields", {})).lower()
+        if re.search(
+            r"рекомендац[а-я\s]*по\s*отчет[а-я\s]*ифт.{0,400}рекомендован",
+            html_blob,
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            return True
+        if re.search(
+            r"ift.{0,200}recommend.{0,200}recommend",
+            html_blob,
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            return True
+        return False
     keyword = tab.get("recommended_keyword", "рекомендован")
     value_str = str(value)
     if _contains_any(value_str, [keyword]):
@@ -292,7 +323,10 @@ def evaluate_release_gates(
     if not safe_release:
         return {"success": False, "message": "Не указан release_key."}
 
-    release = jira_service.get_issue_details(safe_release)
+    release = jira_service.get_issue_details(
+        safe_release,
+        expand="issuelinks,renderedFields",
+    )
     if not release:
         return {"success": False, "message": f"Релиз {safe_release} не найден."}
 
