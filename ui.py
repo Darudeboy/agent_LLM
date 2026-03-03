@@ -452,6 +452,11 @@ class BlastAIAssistant:
             release_key = (release_key or "").strip().upper()
             if not release_key:
                 return "Ошибка: не передан release_key (пример: HRPRELEASE-111135)."
+            if not re.fullmatch(r"HRPRELEASE-\d+", release_key, re.IGNORECASE):
+                return (
+                    "Ошибка: ожидается ключ релиза вида HRPRELEASE-123456. "
+                    f"Получено: {release_key}"
+                )
             self.app_gui.append_ai_chat(
                 f"🛠️ [Агент] Проставляю архитектуру для Story в релизе {release_key}...\\n"
             )
@@ -856,7 +861,24 @@ class BlastAIAssistant:
             )
             if explicit:
                 candidate = explicit.group(1).strip()
+                if re.fullmatch(r"HRPRELEASE-\d+", candidate, re.IGNORECASE):
+                    return ""
                 if not re.fullmatch(r"[A-Z]+-\d+", candidate, re.IGNORECASE):
+                    return candidate
+                return ""
+
+            labeled = re.search(
+                r"(?:project|проект)\s*[:=]?\s*[A-Z0-9_]+\s*[,;]?\s*(?:fix\s*version|fixversion|верси\w*)\s*[:=]?\s*([A-Z0-9._\-]+)",
+                payload,
+                re.IGNORECASE,
+            )
+            if labeled:
+                candidate = labeled.group(1).strip()
+                if not re.fullmatch(r"[A-Z]+-\d+", candidate, re.IGNORECASE) and not re.fullmatch(
+                    r"HRPRELEASE-\d+",
+                    candidate,
+                    re.IGNORECASE,
+                ):
                     return candidate
 
             # Поддержка короткого формата "HRC HM-REL-05-03-2026" без ключевых слов.
@@ -864,6 +886,8 @@ class BlastAIAssistant:
             for token in token_candidates:
                 upper = token.upper()
                 if re.fullmatch(r"[A-Z]+-\d+", upper):
+                    continue
+                if re.fullmatch(r"HRPRELEASE-\d+", upper):
                     continue
                 if upper in {"HRC", "HRM", "NEUROUI", "SFILE", "SEARCHCS", "NEURO", "HRPDEV"}:
                     continue
@@ -893,13 +917,14 @@ class BlastAIAssistant:
                 re.IGNORECASE,
             )
             fix_version = _extract_fix_version_from_text(raw)
-            if project_match and fix_version:
-                project_key = project_match.group(1).upper()
+            if project_match or fix_version:
+                project_key = project_match.group(1).upper() if project_match else ""
                 release_key = self.pending_arch_release_key
                 self.pending_arch_release_key = None
                 self.app_gui.append_ai_chat(
-                    f"🛠️ [Агент] Получил project_key='{project_key}', fix_version='{fix_version}' "
-                    f"для {release_key}, запускаю проставление архитектуры...\n"
+                    f"🛠️ [Агент] Получил уточнение для {release_key}: "
+                    f"project_key='{project_key or '-'}', fix_version='{fix_version or '-'}'. "
+                    "Запускаю проставление архитектуры...\n"
                 )
                 result = self.app_gui.start_architecture_update_from_ai(
                     release_key=release_key,
@@ -1936,9 +1961,14 @@ class ModernJiraApp(ctk.CTk):
             if not story_pairs:
                 release_versions = release.get("fields", {}).get("fixVersions", []) or []
                 release_project = (release.get("fields", {}).get("project", {}).get("key", "") or "").upper()
-                fix_candidates = [v.get("name") for v in release_versions if v.get("name")]
+                fix_candidates = [
+                    v.get("name")
+                    for v in release_versions
+                    if v.get("name")
+                    and not re.fullmatch(r"HRPRELEASE-\d+", str(v.get("name")), re.IGNORECASE)
+                ]
                 ui_fix = self.version_entry.get().strip()
-                if ui_fix:
+                if ui_fix and not re.fullmatch(r"HRPRELEASE-\d+", ui_fix, re.IGNORECASE):
                     fix_candidates.append(ui_fix)
                 fix_candidates = sorted(set(fix_candidates))
 
@@ -1957,10 +1987,10 @@ class ModernJiraApp(ctk.CTk):
                 release_versions = release.get("fields", {}).get("fixVersions", []) or []
                 for fv in release_versions:
                     fv_name = fv.get("name")
-                    if fv_name:
+                    if fv_name and not re.fullmatch(r"HRPRELEASE-\d+", str(fv_name), re.IGNORECASE):
                         story_pairs.add((forced_project_key, fv_name))
                 ui_fix = self.version_entry.get().strip()
-                if ui_fix:
+                if ui_fix and not re.fullmatch(r"HRPRELEASE-\d+", ui_fix, re.IGNORECASE):
                     story_pairs.add((forced_project_key, ui_fix))
 
             if not story_pairs and forced_fix_version:
