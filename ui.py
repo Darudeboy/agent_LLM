@@ -401,14 +401,14 @@ class BlastAIAssistant:
             except Exception as e: return f"Ошибка проверки LT: {e}"
 
         @tool("check_rqg")
-        def check_rqg(release_key: str, max_depth: int = 2, trigger_button: bool = True) -> str:
+        def check_rqg(release_key: str, max_depth: int = 2, trigger_button: bool = False) -> str:
             """
-            Выполнить RQG-проверку релиза.
+            Выполнить RQG-проверку релиза: статусы задач, наличие БТ, дистрибутивы.
 
             Args:
                 release_key: Ключ релиза Jira (например, HRPRELEASE-111135).
                 max_depth: Глубина обхода связанных задач (обычно 2).
-                trigger_button: Нажимать ли Jira transition/button "RQG" перед проверкой.
+                trigger_button: Попробовать нажать системную кнопку RQG в Jira (False по умолчанию).
             """
             release_key = (release_key or "").strip().upper()
             if not release_key:
@@ -524,7 +524,7 @@ class BlastAIAssistant:
                     self.app_gui.jira_service,
                     issue_key,
                     max_depth=2,
-                    trigger_button=True,
+                    trigger_button=False,
                 )
                 result_lines.append("3) RQG-проверка: выполнена")
                 rqg_lines = []
@@ -672,7 +672,7 @@ class BlastAIAssistant:
                 "2) create_deploy_plan(issue_key) — создать deploy plan в Confluence.\\n"
                 "3) create_business_requirements(issue_key, project_key) — создать/обновить БТ/ФР.\\n"
                 "4) check_lead_time(release_key) — LT по релизу.\\n"
-                "5) check_rqg(release_key, max_depth=2, trigger_button=True) — RQG-проверка.\\n"
+                "5) check_rqg(release_key, max_depth=2) — RQG-проверка (статусы, БТ, дистрибутив).\\n"
                 "6) update_architecture_status(release_key) — запуск скрипта арх-статуса.\\n"
                 "7) move_release_status(issue_key, target_status) — перевод релиза в статус.\\n"
                 "8) run_release_pipeline(issue_key, project_key='', target_lt=45, create_bt=False, create_deploy=False).\\n"
@@ -982,12 +982,6 @@ class ModernJiraApp(ctk.CTk):
         )
         self.nav_btn_history.pack(pady=10, padx=20, fill="x")
 
-        self.nav_btn_settings = ctk.CTkButton(
-            self.sidebar, text="⚙️ Настройки", command=self.show_settings_tab,
-            font=ctk.CTkFont(size=14), height=45
-        )
-        self.nav_btn_settings.pack(pady=10, padx=20, fill="x")
-
         self.nav_btn_logs = ctk.CTkButton(
             self.sidebar, text="📄 Логи", command=self.show_logs_tab,
             font=ctk.CTkFont(size=14), height=45
@@ -1007,7 +1001,6 @@ class ModernJiraApp(ctk.CTk):
         self.create_operations_tab()
         self.create_ai_tab()
         self.create_history_tab()
-        self.create_settings_tab()
         self.create_logs_tab()
         self.show_operations_tab()
 
@@ -1023,10 +1016,11 @@ class ModernJiraApp(ctk.CTk):
         # Окно чата
         self.ai_chat_display = ctk.CTkTextbox(self.ai_tab, font=ctk.CTkFont(size=14), wrap="word", state="disabled")
         self.ai_chat_display.pack(fill="both", expand=True, padx=20, pady=10)
-        self.ai_chat_display.tag_config("ai_user", foreground="#0D47A1")
-        self.ai_chat_display.tag_config("ai_bot", foreground="#1B5E20")
-        self.ai_chat_display.tag_config("ai_tool", foreground="#6A1B9A")
-        self.ai_chat_display.tag_config("ai_error", foreground="#B71C1C")
+
+        self.ai_chat_display.tag_config("ai_user", foreground="#0D47A1", justify="left", lmargin1=10, lmargin2=10, rmargin=120)
+        self.ai_chat_display.tag_config("ai_bot", foreground="#1B5E20", justify="right", lmargin1=120, lmargin2=120, rmargin=10)
+        self.ai_chat_display.tag_config("ai_tool", foreground="#6A1B9A", justify="right", lmargin1=120, lmargin2=120, rmargin=10)
+        self.ai_chat_display.tag_config("ai_error", foreground="#B71C1C", justify="right", lmargin1=120, lmargin2=120, rmargin=10)
         self.ai_chat_display.tag_config("ai_default", foreground="#263238")
 
         # Приветственное сообщение
@@ -1115,7 +1109,13 @@ class ModernJiraApp(ctk.CTk):
                 tag = "ai_tool"
             elif plain.startswith("⚠️") or plain.startswith("❌"):
                 tag = "ai_error"
+
+            if tag == "ai_user":
+                self.ai_chat_display.insert("end", "\n", "ai_default")
             self.ai_chat_display.insert("end", text, tag)
+            if tag != "ai_user":
+                self.ai_chat_display.insert("end", "", "ai_default")
+
             self.ai_chat_display.see("end")
             self.ai_chat_display.configure(state="disabled")
         self.after(0, update)
@@ -1359,56 +1359,6 @@ class ModernJiraApp(ctk.CTk):
         self.history_text = ctk.CTkTextbox(self.history_tab, font=ctk.CTkFont(family="Consolas", size=11))
         self.history_text.pack(fill="both", expand=True, padx=20, pady=10)
 
-    def create_settings_tab(self):
-        """Вкладка настроек"""
-        self.settings_tab = ctk.CTkFrame(self.main_content)
-
-        ctk.CTkLabel(self.settings_tab, text="Настройки подключения", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=20)
-
-        settings_form = ctk.CTkFrame(self.settings_tab)
-        settings_form.pack(fill="x", padx=50, pady=20)
-
-        ctk.CTkLabel(settings_form, text="URL Jira:", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, padx=10, pady=15, sticky="e")
-        self.url_entry = ctk.CTkEntry(settings_form, width=400, font=ctk.CTkFont(size=13))
-        self.url_entry.insert(0, self.config.url)
-        self.url_entry.grid(row=0, column=1, padx=10, pady=15)
-
-        ctk.CTkLabel(settings_form, text="API Token:", font=ctk.CTkFont(size=14, weight="bold")).grid(row=1, column=0, padx=10, pady=15, sticky="e")
-        self.token_entry = ctk.CTkEntry(settings_form, width=400, show="*", font=ctk.CTkFont(size=13))
-        self.token_entry.insert(0, self.config.token)
-        self.token_entry.grid(row=1, column=1, padx=10, pady=15)
-
-        self.ssl_var = ctk.BooleanVar(value=self.config.verify_ssl)
-        self.ssl_check = ctk.CTkCheckBox(settings_form, text="Проверять SSL сертификат", variable=self.ssl_var, font=ctk.CTkFont(size=13))
-        self.ssl_check.grid(row=2, column=1, padx=10, pady=15, sticky="w")
-
-        buttons = ctk.CTkFrame(self.settings_tab)
-        buttons.pack(pady=20)
-
-        ctk.CTkButton(buttons, text="💾 Сохранить", command=self.save_settings, font=ctk.CTkFont(size=14), width=150, height=40).pack(side="left", padx=10)
-        ctk.CTkButton(buttons, text="🔌 Проверить подключение", command=self.test_connection, font=ctk.CTkFont(size=14), width=200, height=40).pack(side="left", padx=10)
-
-        info_frame = ctk.CTkFrame(self.settings_tab)
-        info_frame.pack(fill="x", padx=50, pady=20)
-
-        info_text = """Blast v2.3
-
-Jira Automation Tool + Confluence Deploy Plans
-
-Возможности:
-• Массовая привязка задач к релизам
-• Умная очистка связей
-• Параллельная обработка
-• Проверка LT метрики
-• Анализ мастер-веток (PR → Services)
-• Генерация деплой-планов в Confluence
-• История операций
-• Детальное логирование"""
-
-
-
-        ctk.CTkLabel(info_frame, text=info_text, font=ctk.CTkFont(size=12), justify="left").pack(padx=20, pady=20)
-
     def create_logs_tab(self):
         """Вкладка логов"""
         self.logs_tab = ctk.CTkFrame(self.main_content)
@@ -1431,7 +1381,6 @@ Jira Automation Tool + Confluence Deploy Plans
         self.operations_tab.pack_forget()
         self.ai_tab.pack_forget()
         self.history_tab.pack_forget()
-        self.settings_tab.pack_forget()
         self.logs_tab.pack_forget()
 
     def show_operations_tab(self):
@@ -1450,10 +1399,6 @@ Jira Automation Tool + Confluence Deploy Plans
         self.hide_all_tabs()
         self.history_tab.pack(fill="both", expand=True)
         self.refresh_history()
-
-    def show_settings_tab(self):
-        self.hide_all_tabs()
-        self.settings_tab.pack(fill="both", expand=True)
 
     def show_logs_tab(self):
         self.hide_all_tabs()
@@ -1692,7 +1637,7 @@ Jira Automation Tool + Confluence Deploy Plans
                     self.jira_service,
                     release_key,
                     max_depth=2,
-                    trigger_button=True,
+                    trigger_button=False,
                 )
 
                 def show_report():
@@ -2173,22 +2118,6 @@ Jira Automation Tool + Confluence Deploy Plans
     def cancel_current_operation(self):
         self.cancel_operation = True
         self.after(0, lambda: self.update_status("Отмена операции..."))
-
-    def save_settings(self):
-        self.config.url = self.url_entry.get()
-        self.config.token = self.token_entry.get()
-        self.config.verify_ssl = self.ssl_var.get()
-        self.config.save_to_file(self.config_path)
-        self.jira_service = JiraService(self.config)
-        messagebox.showinfo("Успех", "Настройки сохранены")
-        self.check_connection()
-
-    def test_connection(self):
-        success, message = self.jira_service.test_connection()
-        if success:
-            messagebox.showinfo("Успех", message)
-        else:
-            messagebox.showerror("Ошибка", message)
 
     def refresh_history(self):
         self.history_text.delete("1.0", "end")

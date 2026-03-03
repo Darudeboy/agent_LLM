@@ -111,12 +111,41 @@ def _deduplicate_prs(prs: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return deduped
 
 
+def _collect_prs_deep(jira_service, issue_key: str) -> List[Dict[str, str]]:
+    """Собирает PR из задачи и её сабтасков (глубина 1)."""
+    prs: List[Dict[str, str]] = []
+
+    issue = jira_service.get_issue_details(issue_key)
+    if not issue:
+        return prs
+
+    prs.extend(_extract_prs_from_issue_links(issue))
+    remote_links = jira_service.get_issue_remote_links(issue_key)
+    prs.extend(_extract_prs_from_remote_links(remote_links))
+
+    for subtask in issue.get("fields", {}).get("subtasks", []) or []:
+        sub_key = subtask.get("key")
+        if not sub_key:
+            continue
+        sub_issue = jira_service.get_issue_details(sub_key)
+        if not sub_issue:
+            continue
+        prs.extend(_extract_prs_from_issue_links(sub_issue))
+        sub_remote = jira_service.get_issue_remote_links(sub_key)
+        prs.extend(_extract_prs_from_remote_links(sub_remote))
+
+    return _deduplicate_prs(prs)
+
+
 def collect_release_tasks_pr_status(
     jira_service,
     release_key: str,
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> dict:
-    """Собирает статус Story/Bug и связанный статус Pull Request для релиза."""
+    """Собирает статус Story/Bug и связанный статус Pull Request для релиза.
+
+    PR ищутся не только в самой Story/Bug, но и в её сабтасках.
+    """
     release = jira_service.get_issue_details(release_key)
     if not release:
         return {"success": False, "message": f"Релиз {release_key} не найден."}
@@ -160,11 +189,8 @@ def collect_release_tasks_pr_status(
 
         status = fields.get("status", {}).get("name", "Unknown")
         summary = fields.get("summary", "")
-        remote_links = jira_service.get_issue_remote_links(issue_key)
 
-        prs = _extract_prs_from_issue_links(issue)
-        prs.extend(_extract_prs_from_remote_links(remote_links))
-        prs = _deduplicate_prs(prs)
+        prs = _collect_prs_deep(jira_service, issue_key)
 
         items.append(
             {
@@ -177,7 +203,7 @@ def collect_release_tasks_pr_status(
         )
 
         if progress_callback:
-            progress_callback(index / total, f"Обработана задача {issue_key}")
+            progress_callback(index / total, f"Обработана задача {issue_key} + сабтаски")
 
     merged_pr = 0
     open_pr = 0

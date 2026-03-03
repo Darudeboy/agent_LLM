@@ -240,6 +240,7 @@ def run_rqg_check(
     button_name: Optional[str] = None,
 ) -> str:
     lines: List[str] = []
+
     if trigger_button:
         trigger_result = trigger_rqg_button(jira_service, release_key, button_name=button_name)
         if trigger_result["success"]:
@@ -249,9 +250,10 @@ def run_rqg_check(
             )
         else:
             lines.append(
-                f"⚠️ Не удалось нажать Jira-кнопку RQG "
+                f"ℹ️ Jira-кнопка RQG не нажата "
                 f"('{trigger_result['transition_name']}'): {trigger_result['message']}"
             )
+            lines.append("   Это нормально, если RQG — системная кнопка. Анализ продолжается.")
         lines.append("")
 
     result = analyze_rqg_for_release(jira_service=jira_service, release_key=release_key, max_depth=max_depth)
