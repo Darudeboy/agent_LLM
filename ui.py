@@ -26,6 +26,7 @@ from release_pr_status import (
     collect_release_tasks_pr_status,
     format_release_tasks_pr_report,
 )
+from release_flow import evaluate_release_gates, format_release_gate_report
 from master_analyzer import MasterServicesAnalyzer, ConfluenceDeployPlanGenerator
 
 # === ИМПОРТЫ ДЛЯ ИИ-АГЕНТА ===
@@ -178,6 +179,10 @@ class BlastAIAssistant:
             "check_release_tasks_pr_status": ["release_key"],
             "link_tasks_to_release": ["release_key", "fix_version"],
             "link_issues_by_fix_version": ["release_key", "fix_version"],
+            "start_release_guided_cycle": ["release_key", "profile"],
+            "run_next_release_step": ["release_key"],
+            "confirm_manual_check": ["release_key", "check_id", "result"],
+            "move_release_if_ready": ["release_key"],
         }
 
         tool_calls = []
@@ -651,6 +656,76 @@ class BlastAIAssistant:
                 {"release_key": release_key, "fix_version": fix_version}
             )
 
+        @tool("start_release_guided_cycle")
+        def start_release_guided_cycle(release_key: str, profile: str = "auto") -> str:
+            """
+            Запускает пошаговый Guided Cycle для полного релизного процесса.
+
+            Args:
+                release_key: Ключ релиза Jira (например, HRPRELEASE-113937).
+                profile: Профиль правил ('auto', 'default', 'hotfix' или кастомный).
+            """
+            release_key = (release_key or "").strip().upper()
+            profile = (profile or "auto").strip().lower()
+            if not release_key:
+                return "Ошибка: не передан release_key (пример: HRPRELEASE-113937)."
+            return self.app_gui.start_release_guided_cycle(
+                release_key=release_key,
+                profile=profile,
+                announce_in_chat=True,
+            )
+
+        @tool("run_next_release_step")
+        def run_next_release_step(release_key: str) -> str:
+            """
+            Выполняет следующий шаг guided-цикла для релиза:
+            переоценивает гейты и возвращает, что блокирует следующий переход.
+            """
+            release_key = (release_key or "").strip().upper()
+            if not release_key:
+                return "Ошибка: не передан release_key."
+            return self.app_gui.run_next_release_step(
+                release_key=release_key,
+                announce_in_chat=True,
+            )
+
+        @tool("confirm_manual_check")
+        def confirm_manual_check(release_key: str, check_id: str, result: str) -> str:
+            """
+            Подтверждает ручную проверку guided-цикла.
+
+            Args:
+                release_key: Ключ релиза.
+                check_id: Идентификатор проверки (например, decommission_distribution).
+                result: Результат ('ok'/'fail').
+            """
+            release_key = (release_key or "").strip().upper()
+            check_id = (check_id or "").strip()
+            result = (result or "").strip().lower()
+            if not release_key or not check_id:
+                return "Ошибка: укажи release_key и check_id."
+            if result not in ("ok", "fail", "true", "false", "yes", "no", "да", "нет"):
+                return "Ошибка: result должен быть ok/fail."
+            return self.app_gui.confirm_manual_check(
+                release_key=release_key,
+                check_id=check_id,
+                result=result,
+                announce_in_chat=True,
+            )
+
+        @tool("move_release_if_ready")
+        def move_release_if_ready(release_key: str) -> str:
+            """
+            Переводит релиз в следующий статус workflow, если все auto/manual гейты пройдены.
+            """
+            release_key = (release_key or "").strip().upper()
+            if not release_key:
+                return "Ошибка: не передан release_key."
+            return self.app_gui.move_release_if_ready(
+                release_key=release_key,
+                announce_in_chat=True,
+            )
+
         self.tools_map = {
             "get_jira_status": get_jira_status,
             "create_deploy_plan": create_deploy_plan,
@@ -663,6 +738,10 @@ class BlastAIAssistant:
             "check_release_tasks_pr_status": check_release_tasks_pr_status,
             "link_tasks_to_release": link_tasks_to_release,
             "link_issues_by_fix_version": link_issues_by_fix_version,
+            "start_release_guided_cycle": start_release_guided_cycle,
+            "run_next_release_step": run_next_release_step,
+            "confirm_manual_check": confirm_manual_check,
+            "move_release_if_ready": move_release_if_ready,
         }
 
         class AgentState(TypedDict):
@@ -689,6 +768,10 @@ class BlastAIAssistant:
                 "9) check_release_tasks_pr_status(release_key) — Story/Bug + PR статусы (Open/Merged).\\n\\n"
                 "10) link_tasks_to_release(release_key, fix_version) — привязка задач fixVersion к релизу.\\n\\n"
                 "11) link_issues_by_fix_version(release_key, fix_version) — алиас привязки задач к релизу.\\n\\n"
+                "12) start_release_guided_cycle(release_key, profile='auto') — запуск пошагового полного цикла релиза.\\n"
+                "13) run_next_release_step(release_key) — переоценка следующего шага в guided cycle.\\n"
+                "14) confirm_manual_check(release_key, check_id, result) — подтвердить ручную проверку (ok/fail).\\n"
+                "15) move_release_if_ready(release_key) — сдвиг в следующий статус только при пройденных гейтах.\\n\\n"
                 "ПРАВИЛА ВЫЗОВА:\\n"
                 "- Если пользователь просит действие, сначала вызови соответствующий инструмент, не выдумывай результат.\\n"
                 "- При нехватке обязательных аргументов ЗАДАЙ УТОЧНЯЮЩИЙ ВОПРОС и не вызывай инструмент.\\n"
@@ -696,9 +779,12 @@ class BlastAIAssistant:
                 "issue_key/release_key в формате PROJECT-123, "
                 "project_key (для create_business_requirements), "
                 "target_status (для move_release_status), "
-                "fix_version (для link_tasks_to_release).\\n"
+                "fix_version (для link_tasks_to_release), "
+                "check_id/result (для confirm_manual_check).\\n"
                 "- Если пользователь пишет 'собери задачи с версией X в релиз Y', вызови link_tasks_to_release(release_key=Y, fix_version=X).\\n"
                 "- Допустим также алиас link_issues_by_fix_version с теми же аргументами.\\n"
+                "- Если пользователь просит полный релизный цикл, сначала вызови start_release_guided_cycle.\\n"
+                "- Для ручных проверок НЕ придумывай подтверждения: попроси confirm_manual_check с check_id и result.\\n"
                 "- Если пользователь просит несколько действий, верни несколько отдельных JSON-словарей вызова инструментов подряд.\\n"
                 "- Не используй массив commands, не группируй вызовы в один объект.\\n"
                 "- После ToolMessage ответь кратко и структурно: что выполнено, итог, ошибки/что нужно уточнить."
@@ -826,6 +912,73 @@ class BlastAIAssistant:
             self.app_gui.append_ai_chat(f"🤖 Blast AI: {result}\n\n")
             return True
 
+        guided_intent = any(
+            phrase in lowered
+            for phrase in (
+                "guided cycle",
+                "полный цикл релиза",
+                "запусти цикл релиза",
+                "пошаговый релиз",
+            )
+        )
+        if guided_intent and release_match:
+            release_key = release_match.group(1).upper()
+            profile = "hotfix" if "hotfix" in lowered else "auto"
+            self.app_gui.append_ai_chat(
+                f"🛠️ [Агент] Прямая команда: запуск guided cycle для {release_key} (profile={profile})\n"
+            )
+            result = self.app_gui.start_release_guided_cycle(
+                release_key=release_key,
+                profile=profile,
+                announce_in_chat=True,
+            )
+            self.app_gui.append_ai_chat(f"🤖 Blast AI: {result}\n\n")
+            return True
+
+        next_step_intent = any(
+            phrase in lowered
+            for phrase in ("следующий шаг", "next step", "продолжи релиз", "продолжай цикл")
+        )
+        if next_step_intent and release_match:
+            release_key = release_match.group(1).upper()
+            result = self.app_gui.run_next_release_step(
+                release_key=release_key,
+                announce_in_chat=True,
+            )
+            self.app_gui.append_ai_chat(f"🤖 Blast AI: {result}\n\n")
+            return True
+
+        move_if_ready_intent = any(
+            phrase in lowered
+            for phrase in ("move if ready", "сдвинь если готов", "переведи если готов", "двигай дальше")
+        )
+        if move_if_ready_intent and release_match:
+            release_key = release_match.group(1).upper()
+            result = self.app_gui.move_release_if_ready(
+                release_key=release_key,
+                announce_in_chat=True,
+            )
+            self.app_gui.append_ai_chat(f"🤖 Blast AI: {result}\n\n")
+            return True
+
+        confirm_match = re.search(
+            r"confirm_manual_check\s*\(\s*([A-Z]+-\d+)\s*,\s*([a-zA-Z0-9_]+)\s*,\s*(ok|fail|да|нет|true|false)\s*\)",
+            raw,
+            re.IGNORECASE,
+        )
+        if confirm_match:
+            release_key = confirm_match.group(1).upper()
+            check_id = confirm_match.group(2)
+            result_flag = confirm_match.group(3).lower()
+            result = self.app_gui.confirm_manual_check(
+                release_key=release_key,
+                check_id=check_id,
+                result=result_flag,
+                announce_in_chat=True,
+            )
+            self.app_gui.append_ai_chat(f"🤖 Blast AI: {result}\n\n")
+            return True
+
         bt_intent = any(
             phrase in lowered
             for phrase in (
@@ -918,6 +1071,7 @@ class ModernJiraApp(ctk.CTk):
         self.cancel_operation = False
         self.current_operation = None
         self.current_analysis = None
+        self.guided_cycle_context: dict[str, dict] = {}
 
         # Инициализация Master Analyzer
         try:
@@ -1059,11 +1213,12 @@ class ModernJiraApp(ctk.CTk):
         # Приветственное сообщение
         self.append_ai_chat(
             "🤖 Blast AI: Готов к работе с релизом.\\n"
-            "Доступно: проверка статуса, LT, RQG, master-check, Story/Bug+PR отчет, создание БТ, деплой-плана и перевод статуса релиза.\\n"
+            "Доступно: проверка статуса, LT, RQG, master-check, Story/Bug+PR отчет, guided cycle, создание БТ, деплой-плана и перевод статуса релиза.\\n"
             "Примеры команд:\\n"
             "• Проверь статус HRPRELEASE-111135\\n"
             "• Проверь RQG для HRPRELEASE-111135\\n"
             "• Проверь задачи и PR для HRPRELEASE-111135\\n"
+            "• Запусти полный цикл релиза для HRPRELEASE-111135\\n"
             "• Запусти полный пайплайн для HRPRELEASE-111135, проект SFILE\\n"
             "• Переведи HRPRELEASE-111135 в Ready for Prod\\n\\n"
         )
@@ -1111,6 +1266,17 @@ class ModernJiraApp(ctk.CTk):
             hover_color="#1565C0",
             command=lambda: self.send_ai_quick_command(
                 "Проверь задачи и PR для HRPRELEASE-"
+            ),
+        ).pack(side="left", padx=5, pady=6)
+
+        ctk.CTkButton(
+            quick_frame,
+            text="Guided cycle",
+            width=130,
+            fg_color="#00897B",
+            hover_color="#00695C",
+            command=lambda: self.send_ai_quick_command(
+                "Запусти полный цикл релиза для HRPRELEASE-"
             ),
         ).pack(side="left", padx=5, pady=6)
 
@@ -1315,6 +1481,17 @@ class ModernJiraApp(ctk.CTk):
             hover_color="#1565C0",
         )
         self.pr_status_btn.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+
+        self.guided_cycle_btn = ctk.CTkButton(
+            buttons_frame,
+            text="🧭 Guided Cycle",
+            command=self.run_guided_cycle_ui,
+            font=ctk.CTkFont(size=14),
+            height=40,
+            fg_color="#00897B",
+            hover_color="#00695C",
+        )
+        self.guided_cycle_btn.grid(row=2, column=2, padx=5, pady=5, sticky="ew")
 
         self.master_btn = ctk.CTkButton(buttons_frame, text="🔀 Мастер-ветки", command=self.analyze_master_services, font=ctk.CTkFont(size=14), height=40, fg_color="#4CAF50", hover_color="#45a049")
         self.master_btn.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
@@ -1747,6 +1924,174 @@ class ModernJiraApp(ctk.CTk):
             self.after(0, show_error)
             if announce_in_chat:
                 self.append_ai_chat(f"⚠️ {error_text}\n\n")
+
+    def run_guided_cycle_ui(self):
+        release_key = self.release_entry.get().strip().upper()
+        if not release_key:
+            messagebox.showwarning("Ошибка", "Введите ключ релиза!")
+            return
+        self.start_release_guided_cycle(release_key=release_key, profile="auto", announce_in_chat=False)
+
+    def start_release_guided_cycle(self, release_key: str, profile: str = "auto", announce_in_chat: bool = False) -> str:
+        safe_release = (release_key or "").strip().upper()
+        safe_profile = (profile or "auto").strip().lower()
+        if not safe_release:
+            return "Ошибка: release_key не указан."
+
+        self.after(0, self._open_monitor_tab)
+        self.after(0, lambda: self.results_text.delete("1.0", "end"))
+        self.after(0, lambda: self.progress_bar.set(0))
+        self.after(0, lambda: self.update_status(f"Guided cycle: {safe_release}"))
+        self.after(0, lambda: self.details_label.configure(text=f"Профиль: {safe_profile}"))
+
+        worker = threading.Thread(
+            target=self._guided_cycle_thread,
+            args=(safe_release, safe_profile, announce_in_chat),
+            daemon=True,
+        )
+        worker.start()
+        return (
+            f"Запущен guided cycle для {safe_release} (profile={safe_profile}). "
+            "Результаты и блокировки будут показаны в Мониторинге."
+        )
+
+    def _guided_cycle_thread(self, release_key: str, profile: str, announce_in_chat: bool):
+        try:
+            result = evaluate_release_gates(
+                jira_service=self.jira_service,
+                release_key=release_key,
+                profile_name=profile,
+                manual_confirmations=(self.guided_cycle_context.get(release_key, {}) or {}).get("manual_confirmations"),
+            )
+            report = format_release_gate_report(result)
+
+            def show_report():
+                self.results_text.delete("1.0", "end")
+                self.results_text.insert("1.0", report)
+                self.update_progress(1.0, "Оценка гейтов завершена")
+                self.update_status("Готово" if result.get("success") else "Ошибка")
+
+            self.after(0, show_report)
+            if result.get("success"):
+                self.guided_cycle_context[release_key] = {
+                    "profile": result.get("profile_name", profile),
+                    "last_result": result,
+                    "manual_confirmations": (
+                        self.guided_cycle_context.get(release_key, {}) or {}
+                    ).get("manual_confirmations", {}),
+                }
+                self.history.add(
+                    "Guided cycle",
+                    {
+                        "release": release_key,
+                        "profile": result.get("profile_name", profile),
+                        "ready_for_transition": result.get("ready_for_transition", False),
+                    },
+                )
+                self.history.save_to_file(self.history_path)
+
+            if announce_in_chat:
+                self.append_ai_chat(
+                    f"🤖 Blast AI: Guided cycle для {release_key} завершен.\n{report}\n\n"
+                )
+        except Exception as e:
+            error_text = f"Ошибка guided cycle: {e}"
+            self.after(0, lambda: self.update_status("Ошибка"))
+            self.after(0, lambda: self.add_result(f"❌ {error_text}"))
+            if announce_in_chat:
+                self.append_ai_chat(f"⚠️ {error_text}\n\n")
+
+    def run_next_release_step(self, release_key: str, announce_in_chat: bool = False) -> str:
+        safe_release = (release_key or "").strip().upper()
+        if not safe_release:
+            return "Ошибка: release_key не указан."
+        context = self.guided_cycle_context.get(safe_release, {})
+        profile = context.get("profile", "auto")
+        return self.start_release_guided_cycle(
+            release_key=safe_release,
+            profile=profile,
+            announce_in_chat=announce_in_chat,
+        )
+
+    def confirm_manual_check(
+        self,
+        release_key: str,
+        check_id: str,
+        result: str,
+        announce_in_chat: bool = False,
+    ) -> str:
+        safe_release = (release_key or "").strip().upper()
+        safe_check = (check_id or "").strip()
+        verdict = (result or "").strip().lower()
+        if not safe_release or not safe_check:
+            return "Ошибка: release_key/check_id обязательны."
+
+        ok_values = {"ok", "true", "yes", "да"}
+        is_ok = verdict in ok_values
+
+        context = self.guided_cycle_context.setdefault(
+            safe_release,
+            {"profile": "auto", "manual_confirmations": {}, "last_result": None},
+        )
+        confirmations = context.setdefault("manual_confirmations", {})
+        confirmations[safe_check] = is_ok
+        profile = context.get("profile", "auto")
+
+        message = (
+            f"Подтверждение '{safe_check}' сохранено как {'OK' if is_ok else 'FAIL'} "
+            f"для {safe_release}. Переоцениваю гейты..."
+        )
+        self.start_release_guided_cycle(
+            release_key=safe_release,
+            profile=profile,
+            announce_in_chat=announce_in_chat,
+        )
+        return message
+
+    def move_release_if_ready(self, release_key: str, announce_in_chat: bool = False) -> str:
+        safe_release = (release_key or "").strip().upper()
+        if not safe_release:
+            return "Ошибка: release_key не указан."
+
+        context = self.guided_cycle_context.get(safe_release)
+        if not context or not context.get("last_result"):
+            result = evaluate_release_gates(self.jira_service, safe_release, "auto")
+            context = {
+                "profile": result.get("profile_name", "auto"),
+                "last_result": result,
+                "manual_confirmations": {},
+            }
+            self.guided_cycle_context[safe_release] = context
+
+        last_result = context.get("last_result") or {}
+        if not last_result.get("ready_for_transition"):
+            report = format_release_gate_report(last_result)
+            return (
+                "Переход заблокирован: не пройдены все гейты.\n"
+                f"{report}"
+            )
+
+        next_status = last_result.get("next_allowed_transition")
+        if not next_status:
+            return "Релиз уже в финальном статусе или следующий этап не определен."
+
+        ok, msg = self.jira_service.transition_issue(safe_release, next_status)
+        if not ok:
+            return f"Не удалось перевести релиз: {msg}"
+
+        self.history.add(
+            "Guided transition",
+            {"release": safe_release, "target_status": next_status},
+        )
+        self.history.save_to_file(self.history_path)
+
+        # После перевода сразу переоцениваем следующий шаг.
+        self.start_release_guided_cycle(
+            release_key=safe_release,
+            profile=context.get("profile", "auto"),
+            announce_in_chat=announce_in_chat,
+        )
+        return f"Релиз {safe_release} переведен в '{next_status}'. Переоцениваю следующий шаг."
 
     def analyze_master_services(self):
         """Анализ сервисов влитых в master"""
@@ -2231,6 +2576,7 @@ class ModernJiraApp(ctk.CTk):
         self.lt_btn.configure(state=state)
         self.rqg_btn.configure(state=state)
         self.pr_status_btn.configure(state=state)
+        self.guided_cycle_btn.configure(state=state)
         self.master_btn.configure(state=state)
         self.release_entry.configure(state=state)
         self.version_entry.configure(state=state)

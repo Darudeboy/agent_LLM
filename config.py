@@ -45,6 +45,10 @@ CONFLUENCE_PARENT_PAGE_TITLE = os.getenv('CONFLUENCE_PARENT_PAGE_TITLE', 'deploy
 CONFLUENCE_TEMPLATE_PAGE_ID = os.getenv('CONFLUENCE_TEMPLATE_PAGE_ID', '18532011154')
 TEAM_NAME = os.getenv('TEAM_NAME', 'Команда')
 
+# Guided release flow настройки
+RELEASE_FLOW_HOTFIX_PROJECTS = os.getenv('RELEASE_FLOW_HOTFIX_PROJECTS', 'HOTFIX,HF')
+RELEASE_FLOW_PROFILE_OVERRIDES = os.getenv('RELEASE_FLOW_PROFILE_OVERRIDES', '')
+
 
 # Валидация обязательных параметров
 def validate_config():

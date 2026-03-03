@@ -199,3 +199,43 @@ class JiraService:
         except Exception as e:
             self.logger.error(f"Ошибка перевода {issue_key} в '{target_status}': {e}")
             return False, f"Ошибка перевода статуса: {e}"
+
+    @staticmethod
+    def normalize_status(status: str) -> str:
+        return (status or "").strip().lower()
+
+    def status_in(self, status: str, allowed_statuses: List[str]) -> bool:
+        normalized = self.normalize_status(status)
+        allowed = {self.normalize_status(item) for item in (allowed_statuses or [])}
+        return normalized in allowed
+
+    def collect_release_related_issues(
+        self,
+        release_key: str,
+        max_depth: int = 2,
+    ) -> Dict[str, dict]:
+        """Собирает релиз и связанные задачи (BFS по ссылкам/сабтаскам)."""
+        discovered: Dict[str, dict] = {}
+        queue: List[Tuple[str, int]] = [((release_key or "").strip().upper(), 0)]
+        while queue:
+            issue_key, depth = queue.pop(0)
+            if not issue_key or issue_key in discovered or depth > max_depth:
+                continue
+            issue = self.get_issue_details(issue_key)
+            if not issue:
+                continue
+            discovered[issue_key] = issue
+
+            fields = issue.get("fields", {}) or {}
+            for sub in fields.get("subtasks", []) or []:
+                sub_key = sub.get("key")
+                if sub_key and sub_key not in discovered:
+                    queue.append((sub_key, depth + 1))
+
+            for link in fields.get("issuelinks", []) or []:
+                outward = (link.get("outwardIssue") or {}).get("key")
+                inward = (link.get("inwardIssue") or {}).get("key")
+                for linked in (outward, inward):
+                    if linked and linked not in discovered:
+                        queue.append((linked, depth + 1))
+        return discovered
