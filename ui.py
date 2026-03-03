@@ -157,8 +157,71 @@ class BlastAIAssistant:
     def __init__(self, app_gui):
         self.app_gui = app_gui
         self.memory = []
+        self.pending_bt_release_key: str | None = None
         self.llm = SberGigaChatHR().bind_tools([])
         self._setup_graph()
+
+    def _extract_function_style_calls(self, content: str):
+        """Парсит вызовы вида tool_name("arg1", key="value") из ответа модели."""
+        if not content:
+            return [], ""
+
+        arg_names_map = {
+            "get_jira_status": ["issue_key"],
+            "create_deploy_plan": ["issue_key"],
+            "create_business_requirements": ["issue_key", "project_key"],
+            "check_lead_time": ["release_key"],
+            "check_rqg": ["release_key", "max_depth", "trigger_button"],
+            "update_architecture_status": ["release_key"],
+            "move_release_status": ["issue_key", "target_status"],
+            "run_release_pipeline": ["issue_key", "project_key", "target_lt", "create_bt", "create_deploy"],
+            "check_release_tasks_pr_status": ["release_key"],
+            "link_tasks_to_release": ["release_key", "fix_version"],
+            "link_issues_by_fix_version": ["release_key", "fix_version"],
+        }
+
+        tool_calls = []
+        remaining = content
+        for match in re.finditer(r"([a-zA-Z_][a-zA-Z0-9_]*)\(([^()]*)\)", content, re.DOTALL):
+            full_expr = match.group(0)
+            func_name = match.group(1)
+            if func_name not in arg_names_map:
+                continue
+
+            try:
+                expr = ast.parse(full_expr, mode="eval")
+            except Exception:
+                continue
+
+            if not isinstance(expr, ast.Expression) or not isinstance(expr.body, ast.Call):
+                continue
+
+            call_node = expr.body
+            args_dict = {}
+
+            positional_names = arg_names_map.get(func_name, [])
+            for idx, arg_node in enumerate(call_node.args):
+                if idx >= len(positional_names):
+                    break
+                try:
+                    args_dict[positional_names[idx]] = ast.literal_eval(arg_node)
+                except Exception:
+                    args_dict[positional_names[idx]] = None
+
+            for kw in call_node.keywords:
+                if not kw.arg:
+                    continue
+                try:
+                    args_dict[kw.arg] = ast.literal_eval(kw.value)
+                except Exception:
+                    args_dict[kw.arg] = None
+
+            tool_calls.append(
+                {"name": func_name, "args": args_dict, "id": os.urandom(8).hex()}
+            )
+            remaining = remaining.replace(full_expr, "")
+
+        return tool_calls, remaining.strip()
 
     def _extract_tool_calls_from_text(self, content: str):
         """Fallback-парсер tool-команд из текстового ответа модели."""
@@ -239,6 +302,12 @@ class BlastAIAssistant:
                 elif action.get("name") and isinstance(action.get("arguments"), dict):
                     add_tool_call(action.get("name"), action.get("arguments"))
                     remaining = remaining.replace(match, "")
+
+        if not tool_calls:
+            function_calls, function_remaining = self._extract_function_style_calls(remaining)
+            if function_calls:
+                tool_calls.extend(function_calls)
+                remaining = function_remaining
 
         return tool_calls, remaining.strip()
 
@@ -678,6 +747,22 @@ class BlastAIAssistant:
         raw = (text or "").strip()
         lowered = raw.lower()
 
+        if self.pending_bt_release_key:
+            project_match = re.fullmatch(r"\s*([A-Z][A-Z0-9_]{1,15})\s*", raw, re.IGNORECASE)
+            if project_match:
+                project_key = project_match.group(1).upper()
+                release_key = self.pending_bt_release_key
+                self.pending_bt_release_key = None
+                self.app_gui.append_ai_chat(
+                    f"🛠️ [Агент] Получил project_key '{project_key}', запускаю bt3.py для {release_key}...\n"
+                )
+                result = self.app_gui.start_business_requirements_from_ai(
+                    release_key=release_key,
+                    project_key=project_key,
+                )
+                self.app_gui.append_ai_chat(f"🤖 Blast AI: {result}\n\n")
+                return True
+
         release_match = re.search(r"(HRPRELEASE-\d+)", raw, re.IGNORECASE)
         version_match = re.search(
             r"(?:верси\w*|fix\s*version|fixversion)\s*[:=]?\s*([A-Z0-9._\-]+)",
@@ -706,6 +791,43 @@ class BlastAIAssistant:
                 fix_version=fix_version,
             )
             self.app_gui.append_ai_chat(f"🤖 Blast AI: {result}\n\n")
+            return True
+
+        bt_intent = any(
+            phrase in lowered
+            for phrase in (
+                "бизнес-треб",
+                "бт",
+                "business requirements",
+                "фр",
+            )
+        )
+        project_candidates = re.findall(r"\b([A-Z][A-Z0-9_]{1,15})\b", raw)
+        if bt_intent and release_match:
+            release_key = release_match.group(1).upper()
+            release_prefix = release_key.split("-")[0]
+            project_key = ""
+            for candidate in project_candidates:
+                candidate_upper = candidate.upper()
+                if candidate_upper != release_prefix and candidate_upper != release_key:
+                    project_key = candidate_upper
+                    break
+            if project_key and project_key != release_key.split("-")[0]:
+                self.app_gui.append_ai_chat(
+                    f"🛠️ [Агент] Прямая команда: запуск bt3.py для {release_key}, проект {project_key}\n"
+                )
+                result = self.app_gui.start_business_requirements_from_ai(
+                    release_key=release_key,
+                    project_key=project_key,
+                )
+                self.app_gui.append_ai_chat(f"🤖 Blast AI: {result}\n\n")
+                return True
+
+            self.pending_bt_release_key = release_key
+            self.app_gui.append_ai_chat(
+                f"🤖 Blast AI: Для релиза {release_key} укажи project_key "
+                "(например: SFILE, HRM, HRC, NEUROUI, SEARCHCS).\n\n"
+            )
             return True
 
         return False
@@ -1429,6 +1551,71 @@ Jira Automation Tool + Confluence Deploy Plans
             f"Запущена привязка задач с fixVersion '{safe_version}' в релиз '{safe_release}'. "
             "Прогресс смотри во вкладке Мониторинг."
         )
+
+    def start_business_requirements_from_ai(self, release_key: str, project_key: str) -> str:
+        """Запуск bt3.py из AI-чата после получения project_key."""
+        safe_release = (release_key or "").strip().upper()
+        safe_project = (project_key or "").strip().upper()
+        if not safe_release:
+            return "Ошибка: release_key не указан."
+        if not safe_project:
+            return "Ошибка: project_key не указан."
+
+        self.after(0, self._open_monitor_tab)
+        self.after(0, lambda: self.update_status("Запуск генерации бизнес-требований..."))
+        self.after(0, lambda: self.details_label.configure(text=f"{safe_release} / {safe_project}"))
+        self.after(0, lambda: self.progress_bar.set(0.1))
+
+        worker = threading.Thread(
+            target=self._business_requirements_thread,
+            args=(safe_release, safe_project, True),
+            daemon=True,
+        )
+        worker.start()
+        return (
+            f"Запускаю bt3.py для релиза {safe_release} и проекта {safe_project}. "
+            "Результат пришлю в чат."
+        )
+
+    def _business_requirements_thread(self, release_key: str, project_key: str, announce_in_chat: bool):
+        try:
+            script_path = os.path.join(os.path.dirname(__file__), "bt3.py")
+            if not os.path.exists(script_path):
+                raise FileNotFoundError(f"Скрипт не найден: {script_path}")
+
+            process = subprocess.run(
+                [sys.executable, script_path, release_key, project_key],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            output = process.stdout or ""
+            stderr = process.stderr or ""
+
+            self.after(0, lambda: self.progress_bar.set(1.0))
+            if "ok=True" in output:
+                url_match = re.search(r"url=(https?://[^\s]+)", output)
+                url = url_match.group(1) if url_match else "Ссылка не найдена"
+                self.after(0, lambda: self.update_status("Готово"))
+                self.after(0, lambda: self.add_result(f"✅ Бизнес-требования созданы: {url}"))
+                self.history.add("Создание БТ/ФР", {"release": release_key, "project_key": project_key, "url": url})
+                self.history.save_to_file(self.history_path)
+                if announce_in_chat:
+                    self.append_ai_chat(
+                        f"🤖 Blast AI: Бизнес-требования для {release_key} ({project_key}) успешно созданы.\n"
+                        f"Ссылка: {url}\n\n"
+                    )
+            else:
+                error_text = f"Ошибка bt3.py.\nSTDOUT: {output}\nSTDERR: {stderr}"
+                self.after(0, lambda: self.update_status("Ошибка"))
+                self.after(0, lambda e=error_text: self.add_result(f"❌ {e}"))
+                if announce_in_chat:
+                    self.append_ai_chat(f"⚠️ Ошибка генерации бизнес-требований:\n{error_text}\n\n")
+        except Exception as e:
+            self.after(0, lambda: self.update_status("Ошибка"))
+            self.after(0, lambda: self.add_result(f"❌ Ошибка запуска bt3.py: {e}"))
+            if announce_in_chat:
+                self.append_ai_chat(f"⚠️ Ошибка запуска bt3.py: {e}\n\n")
 
     def link_issues(self):
         release_key = self.release_entry.get().strip()
