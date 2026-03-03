@@ -848,6 +848,28 @@ class BlastAIAssistant:
         raw = (text or "").strip()
         lowered = raw.lower()
 
+        def _extract_fix_version_from_text(payload: str) -> str:
+            explicit = re.search(
+                r"(?:верси\w*|fix\s*version|fixversion)\s*[:=]?\s*([A-Z0-9._\-]+)",
+                payload,
+                re.IGNORECASE,
+            )
+            if explicit:
+                candidate = explicit.group(1).strip()
+                if not re.fullmatch(r"[A-Z]+-\d+", candidate, re.IGNORECASE):
+                    return candidate
+
+            # Поддержка короткого формата "HRC HM-REL-05-03-2026" без ключевых слов.
+            token_candidates = re.findall(r"\b([A-Z0-9][A-Z0-9._\-]{4,})\b", payload, re.IGNORECASE)
+            for token in token_candidates:
+                upper = token.upper()
+                if re.fullmatch(r"[A-Z]+-\d+", upper):
+                    continue
+                if upper in {"HRC", "HRM", "NEUROUI", "SFILE", "SEARCHCS", "NEURO", "HRPDEV"}:
+                    continue
+                return token.strip()
+            return ""
+
         if self.pending_bt_release_key:
             project_match = re.fullmatch(r"\s*([A-Z][A-Z0-9_]{1,15})\s*", raw, re.IGNORECASE)
             if project_match:
@@ -870,16 +892,9 @@ class BlastAIAssistant:
                 raw,
                 re.IGNORECASE,
             )
-            fix_match = re.search(
-                r"(?:верси\w*|fix\s*version|fixversion)\s*[:=]?\s*([A-Z0-9._\-]+)",
-                raw,
-                re.IGNORECASE,
-            )
-            if not fix_match:
-                fix_match = re.search(r"\b([A-Z]{1,15}\-[A-Z0-9._\-]{3,})\b", raw, re.IGNORECASE)
-            if project_match and fix_match:
+            fix_version = _extract_fix_version_from_text(raw)
+            if project_match and fix_version:
                 project_key = project_match.group(1).upper()
-                fix_version = fix_match.group(1).strip()
                 release_key = self.pending_arch_release_key
                 self.pending_arch_release_key = None
                 self.app_gui.append_ai_chat(
@@ -1001,15 +1016,8 @@ class BlastAIAssistant:
                 raw,
                 re.IGNORECASE,
             )
-            fix_match = re.search(
-                r"(?:верси\w*|fix\s*version|fixversion)\s*[:=]?\s*([A-Z0-9._\-]+)",
-                raw,
-                re.IGNORECASE,
-            )
-            if not fix_match:
-                fix_match = re.search(r"\b([A-Z]{1,15}\-[A-Z0-9._\-]{3,})\b", raw, re.IGNORECASE)
             forced_project = project_match.group(1).upper() if project_match else ""
-            forced_fix = fix_match.group(1).strip() if fix_match else ""
+            forced_fix = _extract_fix_version_from_text(raw)
             self.app_gui.append_ai_chat(
                 f"🛠️ [Агент] Прямая команда: проставляю архитектуру для Story в релизе {release_key}\n"
             )
