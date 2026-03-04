@@ -65,6 +65,10 @@ def _default_profile() -> Dict[str, Any]:
                 os.getenv("RELEASE_FLOW_DISTRIBUTION_LINK_FIELDS", ""),
                 ["customfield_distribution_link", "customfield_distrib_link"],
             ),
+            "link_display_keywords": _split_csv(
+                os.getenv("RELEASE_FLOW_DISTRIBUTION_LINK_DISPLAY_KEYWORDS", ""),
+                ["ссылка на дистрибутив", "distribution link", "дистрибутив ссылка"],
+            ),
             "registered_fields": _split_csv(
                 os.getenv("RELEASE_FLOW_DISTRIBUTION_REGISTERED_FIELDS", ""),
                 ["customfield_distribution_registered", "customfield_distrib_registered"],

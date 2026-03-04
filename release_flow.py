@@ -43,6 +43,39 @@ def _extract_issue_type(issue: dict) -> str:
     return str(issue.get("fields", {}).get("issuetype", {}).get("name", ""))
 
 
+def _value_to_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        return " ".join(part for part in (_value_to_text(item) for item in value) if part)
+    if isinstance(value, dict):
+        preferred_keys = ("value", "name", "key", "url", "href", "title", "id")
+        parts: List[str] = []
+        for key in preferred_keys:
+            if key in value:
+                piece = _value_to_text(value.get(key))
+                if piece:
+                    parts.append(piece)
+        if parts:
+            return " ".join(parts)
+        # Fallback для ADF/нестандартных структур.
+        return str(value)
+    return str(value)
+
+
+def _has_meaningful_value(value: Any) -> bool:
+    text = _value_to_text(value).strip().lower()
+    if not text:
+        return False
+    return text not in {"none", "null", "n/a", "not set", "нет", "н/д", "-", "{}", "[]"}
+
+
 def _get_linked_issue_keys(issue: dict) -> List[str]:
     keys: List[str] = []
     for link in issue.get("fields", {}).get("issuelinks", []) or []:
@@ -58,7 +91,7 @@ def _get_linked_issue_keys(issue: dict) -> List[str]:
 def _find_issue_value_by_candidates(source: dict, candidates: List[str]) -> Any:
     for field_key in candidates or []:
         value = source.get(field_key)
-        if value not in (None, "", [], {}):
+        if _has_meaningful_value(value):
             return value
     return None
 
@@ -92,7 +125,7 @@ def _find_field_value_by_display_name(
             continue
         if any(keyword in display for keyword in normalized_keywords):
             value = fields.get(field_id)
-            if value not in (None, "", [], {}):
+            if _has_meaningful_value(value):
                 return value
 
     # Fallback: если expand=names не вернулось, используем глобальную карту полей Jira.
@@ -102,7 +135,7 @@ def _find_field_value_by_display_name(
         if not display_name:
             continue
         if any(keyword in display_name for keyword in normalized_keywords):
-            if value not in (None, "", [], {}):
+            if _has_meaningful_value(value):
                 return value
     return None
 
@@ -112,7 +145,13 @@ def _has_distribution_link(release_issue: dict, profile: dict) -> bool:
     tab = profile.get("distribution_tab", {})
     candidates = tab.get("link_fields", [])
     value = _find_issue_value_by_candidates(fields, candidates)
-    if value in (None, ""):
+    if value is None:
+        # Приоритетно читаем поле по display-name: "Ссылка на дистрибутив".
+        value = _find_field_value_by_display_name(
+            release_issue,
+            tab.get("link_display_keywords", []),
+        )
+    if value is None:
         # Fallback: в некоторых тенантах нет стабильного customfield, ищем по текстовым маркерам.
         blob = _flatten_issue_fields(release_issue).lower()
         ke_markers = [_norm(x) for x in tab.get("ke_keywords", [])]
@@ -139,7 +178,7 @@ def _is_distribution_registered(
     fields = release_issue.get("fields", {}) or {}
     tab = profile.get("distribution_tab", {})
     value = _find_issue_value_by_candidates(fields, tab.get("registered_fields", []))
-    if value in (None, "", [], {}):
+    if value is None:
         # Приоритетно: строка "КЭ дистрибутива" (display-name поля из Jira).
         value = _find_field_value_by_display_name(
             release_issue,
@@ -166,7 +205,7 @@ def _is_distribution_registered(
             if not any(re.search(pattern, blob, flags=re.IGNORECASE) for pattern in negative_patterns):
                 return True
         return False
-    value_text = str(value)
+    value_text = _value_to_text(value)
     if _contains_any(value_text, tab.get("registered_keywords", [])):
         return True
     # Если в КЭ стоит конкретное значение версии/объекта (не "Н/Д"), считаем зарегистрированным.
@@ -466,6 +505,17 @@ def evaluate_release_gates(
         profile,
         field_name_map=field_name_map,
     )
+    distribution_tab = profile.get("distribution_tab", {})
+    dist_link_value = _find_field_value_by_display_name(
+        release,
+        distribution_tab.get("link_display_keywords", []),
+        field_name_map=field_name_map,
+    )
+    dist_ke_value = _find_field_value_by_display_name(
+        release,
+        distribution_tab.get("ke_keywords", []),
+        field_name_map=field_name_map,
+    )
     recommendation_ok = _is_ift_recommended(release, profile)
 
     rqg_signals = _extract_rqg_comment_signals(jira_service.get_issue_comments(safe_release))
@@ -492,6 +542,8 @@ def evaluate_release_gates(
         "details": {
             "link_present": dist_link_ok,
             "registered": dist_registered_ok,
+            "distribution_link_value": _value_to_text(dist_link_value)[:300],
+            "distribution_ke_value": _value_to_text(dist_ke_value)[:300],
             "linked_distribution_issue": dist_from_links,
         },
     }
