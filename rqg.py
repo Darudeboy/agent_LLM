@@ -181,6 +181,20 @@ def analyze_rqg_for_release(jira_service, release_key: str, max_depth: int = 2) 
 
 def trigger_rqg_button(jira_service, release_key: str, button_name: Optional[str] = None) -> Dict:
     """Нажимает кнопку/переход RQG в Jira на релизной задаче."""
+    comalarest_success = 0
+    comalarest_failed: List[str] = []
+    linked_issues = jira_service.get_linked_issues(release_key)
+    for linked_key in linked_issues:
+        ok_call, call_msg = jira_service.trigger_rqg_status(
+            issue_key=release_key,
+            linked_issue_key=linked_key,
+            is_full_info=False,
+        )
+        if ok_call:
+            comalarest_success += 1
+        else:
+            comalarest_failed.append(call_msg)
+
     raw_candidates = os.getenv(
         "RQG_TRANSITION_NAMES",
         os.getenv("RQG_TRANSITION_NAME", "RQG,Проверка RQG,Проверки RQG,Run RQG"),
@@ -216,10 +230,13 @@ def trigger_rqg_button(jira_service, release_key: str, button_name: Optional[str
                 break
 
     return {
-        "success": ok,
+        "success": ok or comalarest_success > 0,
         "release_key": release_key,
         "transition_name": transition_name,
-        "message": message,
+        "message": (
+            f"{message}; comalarest_ok={comalarest_success}/{len(linked_issues)}"
+            + (f"; comalarest_errors={'; '.join(comalarest_failed[:5])}" if comalarest_failed else "")
+        ),
     }
 
 

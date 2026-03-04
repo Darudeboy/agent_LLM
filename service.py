@@ -1,4 +1,5 @@
 import logging
+from urllib.parse import quote
 from typing import Dict, List, Optional, Tuple
 from atlassian import Jira
 import warnings
@@ -192,6 +193,31 @@ class JiraService:
         except Exception as e:
             self.logger.error(f"Ошибка получения переходов для {issue_key}: {e}")
             return []
+
+    def trigger_rqg_status(self, issue_key: str, linked_issue_key: str, is_full_info: bool = False) -> Tuple[bool, str]:
+        """
+        Запуск/получение статуса RQG через comalarest endpoint.
+        Пример: /rest/comalarest/1.0/requirements/rqgstatus?issueId=HRPRELEASE-...&linkedIssueId=HRC-...&isFullInfo=false
+        """
+        safe_issue = (issue_key or "").strip().upper()
+        safe_linked = (linked_issue_key or "").strip().upper()
+        if not safe_issue or not safe_linked:
+            return False, "Не указаны issue_key и/или linked_issue_key"
+        try:
+            full_info = "true" if is_full_info else "false"
+            url = (
+                "/rest/comalarest/1.0/requirements/rqgstatus"
+                f"?issueId={quote(safe_issue)}"
+                f"&linkedIssueId={quote(safe_linked)}"
+                f"&isFullInfo={full_info}"
+            )
+            response = self.jira.get(url)
+            return True, f"RQG endpoint ok for {safe_linked}: {response}"
+        except Exception as e:
+            self.logger.error(
+                f"Ошибка RQG endpoint для issue={safe_issue}, linked={safe_linked}: {e}"
+            )
+            return False, f"{safe_linked}: {e}"
 
     def transition_issue(self, issue_key: str, target_status: str) -> Tuple[bool, str]:
         """Перевод задачи в целевой статус по названию статуса"""
