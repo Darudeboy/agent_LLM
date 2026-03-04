@@ -988,6 +988,71 @@ class BlastAIAssistant:
             self.app_gui.append_ai_chat(f"🤖 Blast AI: {result}\n\n")
             return True
 
+        pipeline_intent = any(
+            phrase in lowered
+            for phrase in (
+                "полный пайплайн",
+                "запусти пайплайн",
+                "run pipeline",
+                "release pipeline",
+            )
+        )
+        if pipeline_intent and release_match:
+            issue_key = release_match.group(1).upper()
+            project_match = re.search(
+                r"(?:project|проект)\s*[:=]?\s*(HRC|HRM|NEUROUI|SFILE|SEARCHCS|NEURO|HRPDEV)\b",
+                raw,
+                re.IGNORECASE,
+            )
+            project_key = project_match.group(1).upper() if project_match else ""
+
+            bt_match = re.search(r"create_bt\s*[:=]\s*(true|false|1|0|yes|no|да|нет)", raw, re.IGNORECASE)
+            deploy_match = re.search(
+                r"create_deploy\s*[:=]\s*(true|false|1|0|yes|no|да|нет)",
+                raw,
+                re.IGNORECASE,
+            )
+
+            create_bt = bt_match.group(1).lower() if bt_match else "false"
+            create_deploy = deploy_match.group(1).lower() if deploy_match else "false"
+
+            self.app_gui.append_ai_chat(
+                f"🛠️ [Агент] Прямая команда: запуск полного пайплайна для {issue_key} "
+                f"(project={project_key or '-'}, create_bt={create_bt}, create_deploy={create_deploy})\n"
+            )
+            result = self.tools_map["run_release_pipeline"].invoke(
+                {
+                    "issue_key": issue_key,
+                    "project_key": project_key,
+                    "create_bt": create_bt,
+                    "create_deploy": create_deploy,
+                }
+            )
+            self.app_gui.append_ai_chat(f"🤖 Blast AI: {result}\n\n")
+            return True
+
+        rqg_intent = any(
+            phrase in lowered
+            for phrase in (
+                "проверь rqg",
+                "rqg провер",
+                "запусти rqg",
+                "run rqg",
+            )
+        )
+        if rqg_intent and release_match:
+            release_key = release_match.group(1).upper()
+            depth_match = re.search(r"(?:max_depth|глубин\w*)\s*[:=]?\s*(\d+)", raw, re.IGNORECASE)
+            max_depth = int(depth_match.group(1)) if depth_match else 2
+            self.app_gui.append_ai_chat(
+                f"🛠️ [Агент] Прямая команда: RQG-проверка для {release_key} (max_depth={max_depth})\n"
+            )
+            result = self.tools_map["check_rqg"].invoke(
+                {"release_key": release_key, "max_depth": max_depth, "trigger_button": True}
+            )
+            self.app_gui.append_ai_chat(f"🤖 Blast AI: {result}\n\n")
+            return True
+
         guided_intent = any(
             phrase in lowered
             for phrase in (
