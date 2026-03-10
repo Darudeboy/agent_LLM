@@ -245,6 +245,8 @@ def _is_ift_recommended(release_issue: dict, profile: dict) -> bool:
         # Дополнительный парсинг для rendered HTML:
         # "Рекомендация по отчету ИФТ ... Рекомендован".
         html_blob = str(release_issue.get("renderedFields", {})).lower()
+    html_blob = re.sub(r"<[^>]+>", " ", html_blob)
+    html_blob = re.sub(r"\s+", " ", html_blob)
         if re.search(
             r"рекомендац[а-я\s]*по\s*отчет[а-я\s]*ифт.{0,400}рекомендован",
             html_blob,
@@ -292,6 +294,8 @@ def _is_recommendation_in_rendered(
 ) -> bool:
     rendered = release_issue.get("renderedFields", {}) or {}
     html_blob = str(rendered).lower()
+    html_blob = re.sub(r"<[^>]+>", " ", html_blob)
+    html_blob = re.sub(r"\s+", " ", html_blob)
     for label in label_patterns or []:
         label_norm = _norm(label)
         if not label_norm:
@@ -681,12 +685,23 @@ def evaluate_release_gates(
     }
     (auto_passed if dt_gate["ok"] else auto_failed).append(dt_gate)
 
+    rqg_actual_ok = False
+    if qgm_ok and isinstance(qgm_payload, dict):
+        rqg_info = qgm_payload.get("rqgInfo", {})
+        has_blockers = rqg_info.get("hasBlockDataRqg1") or rqg_info.get("hasBlockDataRqg2") or rqg_info.get("hasBlockDataRqg3")
+        to_comment = str(qgm_payload.get("toComment", "")).lower()
+        if not has_blockers and ("успешно" in to_comment or "successfully" in to_comment):
+            rqg_actual_ok = True
+        elif not has_blockers and rqg_info.get("hasIndicativeData"):
+            rqg_actual_ok = True
+
     rqg_gate = {
         "id": "rqg_qgm",
         "title": "RQG (qgm endpoint)",
-        "ok": qgm_ok,
+        "ok": rqg_actual_ok,
         "details": {
-            "ok": qgm_ok,
+            "ok": rqg_actual_ok,
+            "http_ok": qgm_ok,
             "message": qgm_message,
             "payload_preview": str(qgm_payload or {})[:400],
         },
@@ -777,6 +792,15 @@ def format_release_gate_report(result: Dict[str, Any]) -> str:
     lines.append(f"📝 Ручные проверки pending: {len(result.get('manual_pending', []))}")
     for check in result.get("manual_pending", []):
         lines.append(f"  - {check.get('id')}: {check.get('message')}")
+    if result.get("auto_warnings"):
+        lines.append("")
+        lines.append(f"⚠️ ВНИМАНИЕ (рекомендации, не блокируют переход): {len(result.get('auto_warnings', []))}")
+        for warn in result.get("auto_warnings", []):
+            lines.append(f" - {warn.get('title')}")
+            if warn.get("id") == "bug_quality":
+                for reason in warn.get("details", {}).get("reasons", []):
+                    lines.append(f"   * 🐛 {reason}")
+
     if result.get("manual_pending"):
         lines.append("  Подтвердить вручную можно командой:")
         lines.append(
