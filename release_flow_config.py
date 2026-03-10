@@ -33,6 +33,13 @@ def _default_profile() -> Dict[str, Any]:
             "Согласование ППСИ",
             "Утверждение ППСИ",
         ],
+        "terminal_statuses": _split_csv(
+            os.getenv("RELEASE_FLOW_TERMINAL_STATUSES", ""),
+            [
+                "Утверждение ППСИ",
+                "Установлен на ПРОМ",
+            ],
+        ),
         "transition_ids": {
             "Готов к стабилизации": "15903",
             "Стабилизация": "15904",
@@ -54,9 +61,9 @@ def _default_profile() -> Dict[str, Any]:
         },
         "bug_rules": {
             "ct_ift_keywords": ["ct", "ift", "ифт"],
-            "ct_ift_allowed_statuses": ["Закрыт", "Closed"],
+            "ct_ift_allowed_statuses": ["Закрыт", "Закрыто", "Closed"],
             "prom_keywords": ["пром", "prom"],
-            "prom_expected_statuses": ["Выполнен", "Resolved"],
+            "prom_expected_statuses": ["Подтверждение выполнения", "Done", "Closed", "Resolved", "Выполнено"],
         },
         "testing_tab": {
             "ift_recommendation_fields": _split_csv(

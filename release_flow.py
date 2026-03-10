@@ -615,6 +615,12 @@ def _resolve_transition_id(profile: dict, next_status: Optional[str]) -> Optiona
     return str(transition_id)
 
 
+def _is_terminal_status(current_status: str, profile: dict) -> bool:
+    status_norm = _norm(current_status)
+    terminal = {_norm(x) for x in (profile.get("terminal_statuses", []) or [])}
+    return bool(status_norm and status_norm in terminal)
+
+
 def evaluate_release_gates(
     jira_service,
     release_key: str,
@@ -848,8 +854,10 @@ def evaluate_release_gates(
     current_status = _extract_issue_status(release)
     next_status = _next_transition(current_status, profile.get("workflow_order", []))
     next_transition_id = _resolve_transition_id(profile, next_status)
+    is_terminal = _is_terminal_status(current_status, profile)
 
     ready_for_transition = len(auto_failed) == 0 and len(manual_pending) == 0 and bool(next_status)
+    cycle_completed = is_terminal and len(auto_failed) == 0
 
     return {
         "success": True,
@@ -859,6 +867,8 @@ def evaluate_release_gates(
         "current_stage": current_status,
         "next_allowed_transition": next_status,
         "next_allowed_transition_id": next_transition_id,
+        "is_terminal_status": is_terminal,
+        "cycle_completed": cycle_completed,
         "ready_for_transition": ready_for_transition,
         "auto_passed": auto_passed,
         "auto_failed": auto_failed,
@@ -933,7 +943,9 @@ def format_release_gate_report(result: Dict[str, Any]) -> str:
             lines.append(f"  - {check.get('id')}: {check.get('message')}")
     lines.append("")
 
-    if result.get("ready_for_transition"):
+    if result.get("cycle_completed"):
+        lines.append("✅ Цикл завершен: релиз в финальном статусе.")
+    elif result.get("ready_for_transition"):
         lines.append("🚀 Готов к переходу по workflow.")
     else:
         lines.append("⛔ Переход пока заблокирован (есть непройденные гейты или ручные проверки).")
